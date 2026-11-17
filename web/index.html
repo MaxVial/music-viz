@@ -24,11 +24,19 @@
 
     /* YouTube asks for a visible player of at least 200 x 200 px */
     #player-box { position: fixed; top: 16px; right: 16px; width: 356px; max-width: calc(100vw - 32px); height: 200px; opacity: .85; }
+    /* Two players stacked at the same place: the one of the current track is on top */
+    #player-box iframe { position: absolute; inset: 0; }
+    #player-box .front { z-index: 1; }
   </style>
 
   <!-- Three.js comes from a CDN, version pinned: no npm, no build step -->
   <script type="importmap">
-    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
   </script>
 
   <!-- Official YouTube player: it calls onYouTubeIframeAPIReady when it is loaded -->
@@ -51,6 +59,6 @@
     <button id="next">Suivant →</button>
   </div>
 
-  <div id="player-box"><div id="player"></div></div>
+  <div id="player-box"><div id="player-a"></div><div id="player-b"></div></div>
 </body>
 </html>
