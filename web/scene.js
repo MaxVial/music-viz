@@ -30,6 +30,16 @@ async function loadTracks() {
   return data;
 }
 
+// Mix the list (Fisher-Yates): from the end, swap each track with a random one before it.
+// Every order has the same chance, so each reload gives a different walk.
+function shuffle(list) {
+  for (let i = list.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [list[i], list[j]] = [list[j], list[i]];
+  }
+  return list;
+}
+
 // The cover goes through our nginx (/covers/...) instead of i.ytimg.com
 function coverUrl(track) {
   return track.thumbnail.replace("https://i.ytimg.com/vi/", "/covers/");
@@ -416,7 +426,7 @@ try {
     loadTracks(),
     Promise.race([window.youtubeReady, timeout(15, "Le lecteur YouTube ne se charge pas. Vérifie ta connexion.")]),
   ]);
-  tracks = data.tracks;
+  tracks = shuffle(data.tracks);
   buildScene(tracks);
   await Promise.all([createPlayer("player-a"), createPlayer("player-b")]);
   status.textContent = data.warning ?? `${tracks.length} morceaux t'attendent.`;
