@@ -2,10 +2,14 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 const SPACING = 26;        // metres between two clearings
-const CLEARING_X = 8;      // distance between the middle of the forest and the centre of a clearing
-const CLEARING_RADIUS = 7; // no tree inside this circle
-const SHEET_X = 12;        // the sheet stands at the back of its clearing
-const SHEET_HEIGHT = 6;    // a big sheet: 6 m tall
+const CLEARING_X = 9;      // distance between the middle of the forest and the centre of a clearing
+const CLEARING_RADIUS = 9; // no tree inside this circle
+const SHEET_X = 13;        // the stage stands at the back of its clearing
+const SHEET_WIDTH = 9.6;   // a big 16:9 sheet...
+const SHEET_HEIGHT = 5.4;
+const SHEET_BOTTOM = 1.2;  // ...hanging just above the subwoofers
+const BPM = 160;           // fixed tempo of the dancers (we cannot analyse YouTube's sound)
+const DANCERS_PER_SCENE = 28;
 const EYE = 1.7;           // height of the camera = our eyes
 const SPEED = 3;           // walking speed, metres per second
 const TURN_START = 8;      // the head starts turning towards a clearing this many metres before it
@@ -110,40 +114,44 @@ function clearingOf(index) {
   return { x: sideOf(index) * CLEARING_X, z: -index * SPACING };
 }
 
-// ---- The walk: a winding route between the trees, no path ----
+// ---- The walk: ONE winding curve through the whole forest, no path ----
+// Even when we skip several tracks, we stay on this curve: no tree grows on it.
 
-// Where we stand to look at clearing number `index`: just at its edge
+// Where we stand to look at clearing number `index`: at its edge
 function stopOf(index) {
   return new THREE.Vector3(0, 0, -index * SPACING);
 }
 
-// For each walk (to clearing 0, 1, 2...) a few points pushed left, right, left...:
-// we slalom between the trees instead of walking straight
-let waypoints = [];
+let path;               // the curve of the whole walk
+let stopDistances = []; // metres from the start of the walk to each clearing
 
-function makeWaypoints(count) {
-  const all = [];
+// The walk goes: start, 1 point, clearing 0, 3 points pushed left/right/left (a slalom),
+// clearing 1, 3 points, clearing 2...
+// Catmull-Rom = a curve that goes exactly through each point with round turns;
+// "centripetal" keeps it from making loops.
+function buildPath(count) {
+  const points = [new THREE.Vector3(0, 0, START_Z)];
+  const stopIndices = []; // where each clearing is in the list of points
   for (let i = 0; i < count; i++) {
-    const fromZ = i === 0 ? START_Z : stopOf(i - 1).z;
+    const fromZ = points[points.length - 1].z;
     const toZ = stopOf(i).z;
     const steps = i === 0 ? 1 : 3;
     let side = Math.random() < 0.5 ? -1 : 1;
-    const points = [];
     for (let s = 1; s <= steps; s++) {
       const z = fromZ + (toZ - fromZ) * s / (steps + 1);
       points.push(new THREE.Vector3(side * (1.5 + Math.random() * 2.5), 0, z));
       side = -side;
     }
-    all.push(points);
+    stopIndices.push(points.length);
+    points.push(stopOf(i));
   }
-  return all;
-}
+  path = new THREE.CatmullRomCurve3(points, false, "centripetal");
 
-// A smooth curve from `start` to clearing `index`. Catmull-Rom = a curve that goes
-// exactly through each point; "centripetal" keeps it from making loops.
-function routeFrom(start, index) {
-  const ahead = waypoints[index].filter(p => p.z < start.z - 2); // only the points still in front of us
-  return new THREE.CatmullRomCurve3([start.clone(), ...ahead, stopOf(index)], false, "centripetal");
+  // Three.js measures the curve in small pieces. With 20 pieces between two points,
+  // point number k is at piece number k * 20: that gives the distance to each clearing.
+  path.arcLengthDivisions = (points.length - 1) * 20;
+  const lengths = path.getLengths(); // lengths[n] = metres from the start to piece n
+  stopDistances = stopIndices.map(k => lengths[k * 20]);
 }
 
 // A tree may grow here if its trunk is 1.3 m away from where we walk and outside every clearing.
@@ -277,12 +285,9 @@ function buildScene(tracks) {
   const length = tracks.length * SPACING + 2 * SPACING;
   const clearings = tracks.map((_, i) => clearingOf(i));
 
-  // Draw every walk now, so that no tree grows on it. A point every 50 cm.
-  waypoints = makeWaypoints(tracks.length);
-  const routePoints = tracks.flatMap((_, i) => {
-    const route = routeFrom(i === 0 ? new THREE.Vector3(0, 0, START_Z) : stopOf(i - 1), i);
-    return route.getSpacedPoints(Math.ceil(route.getLength() / 0.5));
-  });
+  // Draw the walk now, so that no tree grows on it: a point every 50 cm
+  buildPath(tracks.length);
+  const routePoints = path.getSpacedPoints(Math.ceil(path.getLength() / 0.5));
 
   addForest(START_Z + 20, -length, clearings, routePoints);
   addFireflies(START_Z + 20, -length);
@@ -311,20 +316,145 @@ function buildScene(tracks) {
   const loader = new THREE.TextureLoader();
   tracks.forEach((track, i) => {
     const sheet = new THREE.Mesh(
-      new THREE.PlaneGeometry(SHEET_HEIGHT, SHEET_HEIGHT),
+      new THREE.PlaneGeometry(SHEET_WIDTH, SHEET_HEIGHT),
       new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }),
     );
     loader.load(coverUrl(track), texture => {
       texture.colorSpace = THREE.SRGBColorSpace;
+      // "high" thumbnails are 4:3: a 16:9 picture with black bars above and below.
+      // We only show the middle 75 % of their height, the real picture.
+      if (texture.image.width / texture.image.height < 1.5) {
+        texture.repeat.set(1, 0.75);
+        texture.offset.set(0, 0.125);
+      }
       sheet.material.map = texture;
       sheet.material.needsUpdate = true;
-      sheet.scale.x = texture.image.width / texture.image.height; // keep the picture's shape
     });
-    sheet.position.set(sideOf(i) * SHEET_X, SHEET_HEIGHT / 2 + 0.5, -i * SPACING); // 50 cm above the grass
+    sheet.position.set(sideOf(i) * SHEET_X, SHEET_BOTTOM + SHEET_HEIGHT / 2, clearings[i].z);
     sheet.rotation.y = -sideOf(i) * Math.PI / 2; // turn the sheet to face the middle of the forest
     sheet.castShadow = true;
     scene.add(sheet);
   });
+
+  addSoundSystems(clearings);
+  addDancers(clearings);
+}
+
+// ---- The stages: walls of speakers on the ground, the sheet in the middle ----
+
+// The front of a speaker, drawn once on an invisible canvas: a big woofer and a small one above
+function speakerTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 128;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#1c1c1c";
+  context.fillRect(0, 0, 128, 128);
+  context.strokeStyle = "#555";
+  context.lineWidth = 4;
+  context.strokeRect(4, 4, 120, 120);
+  for (const [y, radius] of [[80, 38], [24, 14]]) {
+    context.beginPath();
+    context.arc(64, y, radius, 0, Math.PI * 2); // the cone
+    context.fillStyle = "#050505";
+    context.fill();
+    context.strokeStyle = "#777";
+    context.lineWidth = 3;
+    context.stroke();
+    context.beginPath();
+    context.arc(64, y, radius / 3, 0, Math.PI * 2); // the dust cap in the middle
+    context.fillStyle = "#333";
+    context.fill();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function addSoundSystems(clearings) {
+  // A speaker = a box. Its 6 faces get 6 materials, in this order: right, left, top, bottom, FRONT, back
+  const black = new THREE.MeshLambertMaterial({ color: "#151515" });
+  const front = new THREE.MeshLambertMaterial({ map: speakerTexture() });
+  const perStage = 2 * 2 * 4 + 8; // 2 walls of 2 x 4 speakers + 8 subwoofers
+  const speakers = new THREE.InstancedMesh(
+    new THREE.BoxGeometry(1, 1, 0.8), // 1 m wide, 1 m tall, 80 cm deep
+    [black, black, black, black, front, black],
+    clearings.length * perStage,
+  );
+  speakers.castShadow = true;
+  speakers.receiveShadow = true;
+
+  const box = new THREE.Object3D();
+  let n = 0;
+  clearings.forEach((c, i) => {
+    const side = sideOf(i);
+    // along = left/right position seen from the crowd, y = height of the centre, height = box height
+    function place(along, y, height) {
+      box.position.set(side * (SHEET_X - 0.8), y, c.z + along); // 80 cm in front of the sheet
+      box.rotation.set(0, -side * Math.PI / 2, 0);                // facing the crowd, like the sheet
+      box.scale.set(1, height, 1);
+      box.updateMatrix();
+      speakers.setMatrixAt(n++, box.matrix);
+    }
+    // Two walls, left and right of the sheet: 2 columns x 4 rows
+    for (const direction of [-1, 1]) {
+      for (let column = 0; column < 2; column++) {
+        for (let row = 0; row < 4; row++) {
+          place(direction * (SHEET_WIDTH / 2 + 0.6 + column * 1.05), 0.5 + row * 1.02, 1);
+        }
+      }
+    }
+    // A row of 8 subwoofers (taller boxes) on the ground, under the sheet
+    for (let k = 0; k < 8; k++) place(-3.675 + k * 1.05, SHEET_BOTTOM / 2, SHEET_BOTTOM);
+  });
+  scene.add(speakers);
+}
+
+// ---- The dancers: a crowd in front of each stage, moving left and right ----
+
+let dancers;      // ONE InstancedMesh for all the dancers of the forest
+const crowd = []; // where each dancer stands and how it moves
+
+// A little person: a capsule for the body, a ball for the head. Feet at y = 0.
+function dancerGeometry() {
+  const body = new THREE.CapsuleGeometry(0.2, 0.85, 4, 8).translate(0, 0.625, 0);
+  const head = new THREE.SphereGeometry(0.14, 8, 6).translate(0, 1.41, 0);
+  return mergeGeometries([body, head]);
+}
+
+function addDancers(clearings) {
+  clearings.forEach((c, i) => {
+    const side = sideOf(i);
+    for (let k = 0; k < DANCERS_PER_SCENE; k++) {
+      crowd.push({
+        x: side * (4.5 + Math.random() * 6),   // between us and the speakers
+        z: c.z + (Math.random() - 0.5) * 11,    // spread along the stage
+        size: 0.95 + Math.random() * 0.2,       // not everybody is as tall
+        phase: Math.random() * Math.PI * 2,     // not everybody moves at the same moment
+      });
+    }
+  });
+  dancers = new THREE.InstancedMesh(dancerGeometry(), new THREE.MeshLambertMaterial(), crowd.length);
+  dancers.castShadow = true;
+  const colour = new THREE.Color();
+  crowd.forEach((_, k) => dancers.setColorAt(k, colour.setHSL(Math.random(), 0.25, 0.03 + Math.random() * 0.05)));
+  animateDancers(0); // place them before the first image
+  scene.add(dancers);
+}
+
+const dancer = new THREE.Object3D();
+
+function animateDancers(time) {
+  const beat = time * BPM / 60 * Math.PI; // grows by π at each beat
+  crowd.forEach((d, k) => {
+    const sway = Math.sin(beat / 2 + d.phase); // left... right... (2 beats each way)
+    const bounce = Math.abs(Math.sin(beat + d.phase * 0.2)) * 0.08; // a small jump on each beat
+    dancer.position.set(d.x, bounce, d.z + sway * 0.15);
+    dancer.rotation.set(sway * 0.12, 0, 0); // the body leans the way it moves
+    dancer.scale.setScalar(d.size);
+    dancer.updateMatrix();
+    dancers.setMatrixAt(k, dancer.matrix);
+  });
+  dancers.instanceMatrix.needsUpdate = true; // tell the graphics card the positions changed
 }
 
 // ---------- 3. Two YouTube players ----------
@@ -373,9 +503,8 @@ let tracks = [];
 let current = 0;      // the sheet we walk to, then listen to
 let walking = false;  // true while moving, false while listening
 let started = false;  // false until the "enter" click
-let route;            // the curve of the current walk
-let routeLength = 0;  // its length in metres
-let walked = 0;       // metres already walked on it
+let distance = 0;     // where we are on the walk, in metres from its start
+let walkStart = 0;    // where we were when this walk began (for the crossfade)
 
 // Sound along the walk, with progress = 0 when we leave a sheet and 1 when we reach the next one:
 const FADE_OUT_END = 0.7; // the old track is silent at 70 % of the way
@@ -383,10 +512,8 @@ const FADE_IN_START = 0.5; // the new track starts half way, then grows until we
 
 function goTo(index) {
   current = index % tracks.length;
-  if (current === 0) camera.position.set(0, EYE, START_Z); // after the last one: back to the start
-  route = routeFrom(new THREE.Vector3(camera.position.x, 0, camera.position.z), current);
-  routeLength = route.getLength();
-  walked = 0;
+  if (current === 0) distance = 0; // after the last one: back to the start of the walk
+  walkStart = distance;
   walking = true;
 
   // The player of the old track keeps playing and will fade out.
@@ -427,28 +554,29 @@ renderer.setAnimationLoop(() => {
     const sheetYaw = -sideOf(current) * Math.PI / 2; // +90° = left, -90° = right
 
     if (walking) {
-      walked = Math.min(routeLength, walked + SPEED * dt);
-      const u = walked / routeLength; // 0 = start of the curve, 1 = end
-      const point = route.getPointAt(u);
+      const target = stopDistances[current];
+      distance = Math.min(target, distance + SPEED * dt);
+      const u = distance / path.getLength(); // 0 = start of the curve, 1 = end
+      const point = path.getPointAt(u);
       camera.position.x = point.x;
       camera.position.z = point.z;
       // Look where we go: the tangent is the direction of the curve at this point
-      const direction = route.getTangentAt(u);
+      const direction = path.getTangentAt(u);
       yaw += Math.atan2(-direction.x, -direction.z);
       stepPhase += dt * 8;
       bob = Math.sin(stepPhase) * 0.04;
       // The last metres before the clearing: the head turns towards it little by little
-      const closeness = Math.max(0, 1 - (routeLength - walked) / TURN_START); // 0 far, 1 arrived
+      const closeness = Math.max(0, 1 - (target - distance) / TURN_START); // 0 far, 1 arrived
       yaw += (sheetYaw - yaw) * closeness;
 
-      if (walked === routeLength) walking = false; // arrived in front of the sheet
+      if (distance === target) walking = false; // arrived in front of the sheet
     } else {
       yaw = sheetYaw + Math.sin(time * 0.5) * 0.04; // listening: almost still
-      pitch = 0.15;                                  // eyes up towards the cover
+      pitch = 0.18;                                  // eyes up towards the cover
     }
 
     // ---- Crossfade: the volumes depend on where we are on the way ----
-    const progress = walking ? walked / routeLength : 1;
+    const progress = walking ? (distance - walkStart) / Math.max(0.001, stopDistances[current] - walkStart) : 1;
     if (!loaded && progress >= FADE_IN_START) { // half way: the new track starts, silent
       players[active].setVolume(0);
       players[active].volume = 0;
@@ -463,6 +591,7 @@ renderer.setAnimationLoop(() => {
   camera.rotation.x = approach(camera.rotation.x, pitch, dt, 2);
   camera.position.y = approach(camera.position.y, EYE + bob, dt, 10);
   followCamera();
+  if (dancers) animateDancers(time);
 
   if (fireflies) {
     fireflies.position.y = Math.sin(time * 0.5) * 0.3;              // they float up and down
