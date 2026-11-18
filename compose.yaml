@@ -16,6 +16,10 @@ services:
       DB_HOST: db
     depends_on:
       - db
+    networks:
+      default:
+        aliases:
+          - music-viz-api # the name nginx uses to reach Flask (see nginx.conf)
 
   db:
     image: redis:alpine

@@ -25,7 +25,8 @@ const now = document.getElementById("now");
 async function loadTracks() {
   let data;
   try {
-    data = await (await fetch("/api/tracks")).json();
+    // Relative address (no "/" at the start): works at localhost:8080/ AND at .../music-viz/
+    data = await (await fetch("api/tracks")).json();
   } catch {
     throw new Error("Le serveur ne répond pas. Lance « docker compose up ».");
   }
@@ -44,9 +45,9 @@ function shuffle(list) {
   return list;
 }
 
-// The cover goes through our nginx (/covers/...) instead of i.ytimg.com
+// The cover goes through our nginx (covers/...) instead of i.ytimg.com (relative address too)
 function coverUrl(track) {
-  return track.thumbnail.replace("https://i.ytimg.com/vi/", "/covers/");
+  return track.thumbnail.replace("https://i.ytimg.com/vi/", "covers/");
 }
 
 // ---------- 2. The 3D scene ----------

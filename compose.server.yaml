@@ -1,0 +1,22 @@
+# On the school server only, added on top of compose.yaml:
+#   docker compose -f compose.yaml -f compose.server.yaml up -d --build
+# Caddy (in the visit-counter project) receives https://student21.wt.thomasjuldo.com
+# and sends /music-viz/... to our nginx. So:
+services:
+  web:
+    ports: !reset [] # no port open on the server: only Caddy talks to us
+    restart: unless-stopped
+    networks:
+      default: # our own network, to reach Flask
+      caddy:   # Caddy's network, where we are called "music-viz"
+        aliases:
+          - music-viz
+  api:
+    restart: unless-stopped
+  db:
+    restart: unless-stopped
+
+networks:
+  caddy:
+    external: true               # created by the visit-counter project, not by us
+    name: visit-counter_default

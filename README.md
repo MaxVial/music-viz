@@ -44,6 +44,27 @@ docker compose down         # tout arrêter (le cache Redis est conservé)
 docker compose down -v      # tout arrêter ET vider le cache
 ```
 
+## Déploiement
+
+En ligne : **https://student21.wt.thomasjuldo.com/music-viz/**
+
+Sur le serveur de l'école, un seul Caddy reçoit tout le trafic HTTPS. Il appartient au projet
+[visit-counter](https://github.com/MaxVial/visit-counter) et envoie `/music-viz/…` vers le nginx
+de ce projet, en retirant le préfixe. `compose.server.yaml` ajoute pour le serveur :
+- aucun port ouvert, car seul Caddy parle à nginx ;
+- le branchement de nginx sur le réseau de Caddy (`visit-counter_default`), sous le nom `music-viz` ;
+- un redémarrage automatique.
+
+```bash
+git clone https://github.com/MaxVial/music-viz.git
+cd music-viz
+# créer .env avec les trois clés (il n'est pas dans le dépôt)
+docker compose -f compose.yaml -f compose.server.yaml up -d --build
+```
+
+La page utilise des adresses **relatives** (`api/tracks`, `covers/…`) : elle fonctionne aussi bien à
+`http://localhost:8080/` qu'à `…/music-viz/`.
+
 ## Utilisation
 
 - La caméra avance seule de clairière en clairière. Chaque morceau est joué **en entier**,
