@@ -21,6 +21,19 @@
     #hud { position: fixed; left: 16px; right: 16px; bottom: 16px; display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px; }
     #now { margin: 0; text-shadow: 0 0 6px #000; }
     #now strong { display: block; font-size: 20px; }
+    .buttons { display: flex; gap: 8px; }
+
+    /* The map, over everything */
+    #map { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; gap: 12px; padding: 16px; background: rgba(5, 8, 12, .94); }
+    .map-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .map-top p { margin: 0; }
+    #map-area { position: relative; flex: 1; overflow: hidden; }
+    #map-area canvas { position: absolute; inset: 0; }
+    /* a cover on the map: centred on its stage */
+    .map-cover { position: absolute; transform: translate(-50%, -50%); padding: 0; border: 2px solid #eee; border-radius: 4px; overflow: hidden; background: #000; }
+    .map-cover img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; }
+    .map-cover:hover, .map-cover.current { border-color: #ff2d6f; z-index: 1; }
+    #map-you { position: absolute; width: 14px; height: 14px; border-radius: 50%; background: #ff2d6f; box-shadow: 0 0 10px #ff2d6f; transform: translate(-50%, -50%); }
 
     /* YouTube asks for a visible player of at least 200 x 200 px */
     #player-box { position: fixed; top: 16px; right: 16px; width: 356px; max-width: calc(100vw - 32px); height: 200px; opacity: .85; }
@@ -46,7 +59,7 @@
   <script src="https://www.youtube.com/iframe_api"></script>
 
   <!-- ?v=... : change this number to force browsers to download a new scene.js -->
-  <script type="module" src="scene.js?v=8"></script>
+  <script type="module" src="scene.js?v=13"></script>
 </head>
 <body>
   <div id="enter">
@@ -57,7 +70,19 @@
 
   <div id="hud" hidden>
     <p id="now"></p>
-    <button id="next">Suivant →</button>
+    <div class="buttons">
+      <button id="map-button">Map</button>
+      <button id="next">Suivant →</button>
+    </div>
+  </div>
+
+  <!-- The map: the forest seen from above, click a cover to go there -->
+  <div id="map" hidden>
+    <div class="map-top">
+      <p>Clique sur une pochette pour t'y téléporter</p>
+      <button id="map-close">Fermer ✕</button>
+    </div>
+    <div id="map-area"></div>
   </div>
 
   <div id="player-box"><div id="player-a"></div><div id="player-b"></div></div>

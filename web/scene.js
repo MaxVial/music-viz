@@ -176,6 +176,8 @@ function firGeometry() {
     new THREE.ConeGeometry(radius, height, 8).translate(0, y, 0)));
 }
 
+const treeSpots = []; // where every tree stands, to draw the map
+
 // Thousands of trees drawn in one go: an InstancedMesh is ONE shape repeated many times,
 // each copy with its own position, rotation, size and colour.
 function addForest(startZ, endZ, clearings, routePoints) {
@@ -199,6 +201,7 @@ function addForest(startZ, endZ, clearings, routePoints) {
   function plant(x, z) {
     if (count === max || !isFree(x, z, clearings, routePoints)) return;
     const size = 0.8 + Math.random() * 0.6;
+    treeSpots.push({ x, z, size }); // remembered for the map and the roots
     tree.position.set(x, 0, z);
     tree.rotation.set(
       (Math.random() - 0.5) * 0.08, // leans a little...
@@ -233,11 +236,44 @@ function addForest(startZ, endZ, clearings, routePoints) {
 
 // The ground: a big plane cut into small squares. Each corner gets a colour between moss
 // and earth, and sinks a little at random: a ground that is no longer perfectly flat.
+// The texture of the ground, drawn once on a 256 x 256 canvas and repeated every 4 m:
+// thousands of specks of earth, moss and light, and little strokes for fir needles and twigs
+function groundTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 256;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#c8c8c0"; // light: the texture is MULTIPLIED by the colours of the ground
+  context.fillRect(0, 0, 256, 256);
+  const specks = ["#5b4630", "#3a3528", "#7a9a5a", "#4d6a3a", "#eeeedd"];
+  for (let i = 0; i < 4000; i++) {
+    context.fillStyle = specks[Math.floor(Math.random() * specks.length)];
+    const size = 1 + Math.random() * 3;
+    context.fillRect(Math.random() * 256, Math.random() * 256, size, size);
+  }
+  context.lineWidth = 1;
+  for (let i = 0; i < 500; i++) { // needles and twigs
+    const x = Math.random() * 256;
+    const y = Math.random() * 256;
+    const angle = Math.random() * Math.PI;
+    const length = 4 + Math.random() * 10;
+    context.strokeStyle = Math.random() < 0.7 ? "#6b4e2e" : "#2e2418";
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x + Math.cos(angle) * length, y + Math.sin(angle) * length);
+    context.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping; // repeat it like tiles
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy(); // stays sharp when seen from the side
+  return texture;
+}
+
 function groundGeometry(width, length) {
   const geometry = new THREE.PlaneGeometry(width, length, 50, Math.round(length / 4));
   const position = geometry.attributes.position;
-  const moss = new THREE.Color("#1b2614");
-  const earth = new THREE.Color("#2a2016");
+  const moss = new THREE.Color("#2e3d20");
+  const earth = new THREE.Color("#45331f");
   const colours = [];
   for (let i = 0; i < position.count; i++) {
     position.setZ(i, -Math.random() * 0.25); // only down: it never covers the clearings
@@ -247,6 +283,101 @@ function groundGeometry(width, length) {
   geometry.setAttribute("color", new THREE.Float32BufferAttribute(colours, 3));
   geometry.computeVertexNormals(); // recompute which way each bit of ground faces, for the light
   return geometry;
+}
+
+// ---- Ground details: grass, roots and stones. Three InstancedMesh, like the trees ----
+
+// A tuft of grass = 7 thin 3-sided spikes, leaning a little in all directions
+function tuftGeometry() {
+  const blades = [];
+  for (let i = 0; i < 7; i++) {
+    const height = 0.15 + Math.random() * 0.25;
+    blades.push(new THREE.ConeGeometry(0.03, height, 3, 1, true)
+      .translate(0, height / 2, 0)                  // base on the ground
+      .rotateZ((Math.random() - 0.5) * 0.8)         // lean
+      .rotateX((Math.random() - 0.5) * 0.8)
+      .translate((Math.random() - 0.5) * 0.15, 0, (Math.random() - 0.5) * 0.15));
+  }
+  return mergeGeometries(blades);
+}
+
+// A root = a cone lying down, thick at the trunk, thin at the end, going slightly into the ground
+function rootGeometry() {
+  return new THREE.CylinderGeometry(0.02, 0.14, 1.4, 5, 1, true) // thin end, thick end, length
+    .translate(0, 0.7, 0)              // the thick end at the origin (the trunk)
+    .rotateZ(-Math.PI / 2 - 0.12);     // lie it down, pointing a bit into the ground
+}
+
+function addGroundDetails(clearings, routePoints) {
+  const helper = new THREE.Object3D();
+  const colour = new THREE.Color();
+
+  // 1. Grass: denser where we walk and in the clearings, where we look
+  const grassSpots = [];
+  routePoints.forEach((p, k) => {
+    if (k % 3 !== 0) return; // every 1.5 m
+    for (let n = 0; n < 10; n++) grassSpots.push([p.x + (Math.random() - 0.5) * 14, p.z + (Math.random() - 0.5) * 3]);
+  });
+  for (const c of clearings) {
+    for (let n = 0; n < 150; n++) {
+      const angle = Math.random() * Math.PI * 2;
+      const radius = Math.sqrt(Math.random()) * CLEARING_RADIUS; // sqrt: spread evenly in the circle
+      grassSpots.push([c.x + Math.cos(angle) * radius, c.z + Math.sin(angle) * radius]);
+    }
+  }
+  const grass = new THREE.InstancedMesh(tuftGeometry(), new THREE.MeshLambertMaterial({ flatShading: true }), grassSpots.length);
+  grassSpots.forEach(([x, z], k) => {
+    helper.position.set(x, -0.05, z);
+    helper.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    helper.scale.setScalar(0.7 + Math.random() * 0.8);
+    helper.updateMatrix();
+    grass.setMatrixAt(k, helper.matrix);
+    grass.setColorAt(k, colour.setHSL(0.22 + Math.random() * 0.1, 0.55, 0.06 + Math.random() * 0.08));
+  });
+  grass.receiveShadow = true;
+  scene.add(grass);
+
+  // 2. Roots: 3 to 5 around the trees close to us (far ones are hidden by the fog anyway)
+  const rootSpots = [];
+  for (const t of treeSpots) {
+    if (Math.abs(t.x) > 14) continue;
+    const count = 3 + Math.floor(Math.random() * 3);
+    for (let n = 0; n < count; n++) {
+      rootSpots.push({ x: t.x, z: t.z, size: t.size, angle: (n / count) * Math.PI * 2 + Math.random() * 0.6 });
+    }
+  }
+  const roots = new THREE.InstancedMesh(rootGeometry(), new THREE.MeshLambertMaterial({ color: "#3b2a1d", flatShading: true }), rootSpots.length);
+  rootSpots.forEach((r, k) => {
+    helper.position.set(r.x, 0.1, r.z);
+    helper.rotation.set(0, r.angle, 0); // all around the trunk
+    helper.scale.setScalar(r.size * (0.7 + Math.random() * 0.6));
+    helper.updateMatrix();
+    roots.setMatrixAt(k, helper.matrix);
+  });
+  roots.castShadow = true;
+  roots.receiveShadow = true;
+  scene.add(roots);
+
+  // 3. Stones: a 12-faced ball, squashed, half in the ground
+  const stoneSpots = routePoints.filter((_, k) => k % 8 === 0); // about one every 4 m
+  const stones = new THREE.InstancedMesh(
+    new THREE.DodecahedronGeometry(0.3),
+    new THREE.MeshLambertMaterial({ flatShading: true }),
+    stoneSpots.length,
+  );
+  stoneSpots.forEach((p, k) => {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    helper.position.set(p.x + side * (1 + Math.random() * 6), 0, p.z + (Math.random() - 0.5) * 3);
+    helper.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    const size = 0.4 + Math.random() * 1.2;
+    helper.scale.set(size, size * 0.5, size * (0.7 + Math.random() * 0.5)); // flatter than wide
+    helper.updateMatrix();
+    stones.setMatrixAt(k, helper.matrix);
+    stones.setColorAt(k, colour.setHSL(0.15 + Math.random() * 0.15, 0.1, 0.18 + Math.random() * 0.12));
+  });
+  stones.castShadow = true;
+  stones.receiveShadow = true;
+  scene.add(stones);
 }
 
 // Fireflies: 600 points of light floating in the fog
@@ -291,12 +422,20 @@ function buildScene(tracks) {
 
   addForest(START_Z + 20, -length, clearings, routePoints);
   addFireflies(START_Z + 20, -length);
+  addGroundDetails(clearings, routePoints);
+
+  // The same picture, repeated: one tile = 4 m x 4 m
+  const soil = groundTexture();
+  soil.repeat.set(200 / 4, (length + 100) / 4);
+  const clearingTexture = soil.clone(); // same picture, other number of tiles
+  clearingTexture.repeat.set(2 * CLEARING_RADIUS / 4, 2 * CLEARING_RADIUS / 4);
+  clearingTexture.needsUpdate = true;
 
   // A patch of lighter grass shows each clearing
   for (const c of clearings) {
     const patch = new THREE.Mesh(
       new THREE.CircleGeometry(CLEARING_RADIUS, 32),
-      new THREE.MeshLambertMaterial({ color: "#26331b" }),
+      new THREE.MeshLambertMaterial({ color: "#3a4a2a", map: clearingTexture }),
     );
     patch.rotation.x = -Math.PI / 2;
     patch.position.set(c.x, 0.005, c.z);
@@ -306,7 +445,7 @@ function buildScene(tracks) {
 
   const ground = new THREE.Mesh(
     groundGeometry(200, length + 100),
-    new THREE.MeshLambertMaterial({ vertexColors: true }), // use the colour of each corner
+    new THREE.MeshLambertMaterial({ vertexColors: true, map: soil }), // colour of each corner x texture
   );
   ground.rotation.x = -Math.PI / 2; // a plane is vertical by default: lay it down
   ground.position.z = -length / 2 + START_Z;
@@ -338,6 +477,7 @@ function buildScene(tracks) {
 
   addSoundSystems(clearings);
   addDancers(clearings);
+  addSkyBeams(clearings);
 }
 
 // ---- The stages: walls of speakers on the ground, the sheet in the middle ----
@@ -457,6 +597,127 @@ function animateDancers(time) {
   dancers.instanceMatrix.needsUpdate = true; // tell the graphics card the positions changed
 }
 
+// ---- Party lights ----
+
+const PALETTE = ["#ff2d6f", "#2de1ff", "#b84dff", "#ffb02d", "#3dff7a"].map(c => new THREE.Color(c));
+
+// Real lights are expensive: every light is computed for every pixel. So we do NOT give
+// 4 lights to each of the 25 stages. We have 2 "rigs" of 4 lights, and each frame they go
+// to the 2 stages closest to us. A stage keeps its rig from far away (lost in the fog)
+// until we have walked past it: its lights stay on during the whole approach.
+const rigs = [0, 1].map(() => ({
+  index: -1, // the stage this rig lights, -1 = none yet
+  lamps: [0, 1, 2, 3].map(() => {
+    // colour, intensity, reach (m), cone angle (rad), soft edge (0-1), how fast it fades with distance
+    const spot = new THREE.SpotLight("#ffffff", 0, 40, 0.45, 0.6, 1);
+    // the lamp itself: a small glowing ball where the light comes from
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), new THREE.MeshBasicMaterial());
+    scene.add(spot, spot.target, bulb);
+    return { spot, bulb };
+  }),
+}));
+
+function setupRig(rig, index) {
+  rig.index = index;
+  const side = sideOf(index);
+  const z = stopOf(index).z;
+  const layout = [ // [lamp x, y, z] -> [aimed at x, y, z] (z relative to the stage)
+    [[-side * 2, 5, -5], [side * SHEET_X, 2, -3]],                // behind us: on the dancers'
+    [[-side * 2, 5, 5], [side * SHEET_X, 2, 3]],                  // backs and the speakers
+    [[side * (SHEET_X - 0.8), 4.6, -6.4], [side * 6, 0, -2]],     // on top of the speaker walls:
+    [[side * (SHEET_X - 0.8), 4.6, 6.4], [side * 6, 0, 2]],       // towards the crowd
+  ];
+  rig.lamps.forEach(({ spot, bulb }, k) => {
+    const [[x, y, dz], [tx, ty, tdz]] = layout[k];
+    spot.position.set(x, y, z + dz);
+    spot.target.position.set(tx, ty, z + tdz);
+    bulb.position.copy(spot.position);
+  });
+}
+
+function animateLights(time) {
+  if (tracks.length === 0) return;
+  const beats = time * BPM / 60;
+  const flash = (1 - beats % 1) ** 3;        // 1 right on the beat, then fades quickly
+  const colourStep = Math.floor(beats / 8);  // colours change every 8 beats
+
+  // The 2 stages around us: the one we come from and the one we go to.
+  // Two neighbours are always one even and one odd: the even one gets rig 0, the odd one rig 1.
+  const where = Math.max(0, Math.min(tracks.length - 1, -camera.position.z / SPACING));
+  for (const index of [Math.floor(where), Math.ceil(where)]) {
+    const rig = rigs[index % 2];
+    if (rig.index !== index) setupRig(rig, index);
+  }
+
+  for (const rig of rigs) {
+    if (rig.index < 0) continue;
+    rig.lamps.forEach(({ spot, bulb }, k) => {
+      const colour = PALETTE[(rig.index + colourStep + k) % PALETTE.length];
+      spot.color.copy(colour);
+      bulb.material.color.copy(colour);
+      spot.intensity = 40 + 80 * flash; // always on, plus a flash on each beat
+    });
+  }
+}
+
+// ---- Sky beams: searchlights behind each stage, sweeping the sky ----
+
+let beams;
+const beamSpots = [];
+const beam = new THREE.Object3D();
+
+function addSkyBeams(clearings) {
+  // A beam = a long open tube, thin at the bottom, wide at the top, that fades as it rises.
+  // The fading comes from a picture: white at the bottom, black at the top (alphaMap = transparency).
+  const canvas = document.createElement("canvas");
+  canvas.width = 4;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  const fade = context.createLinearGradient(0, 0, 0, 64);
+  fade.addColorStop(0, "black"); // top of the picture = top of the beam: invisible
+  fade.addColorStop(1, "white"); // bottom = where the light starts: visible
+  context.fillStyle = fade;
+  context.fillRect(0, 0, 4, 64);
+
+  const geometry = new THREE.CylinderGeometry(3, 0.12, 60, 16, 1, true).translate(0, 30, 0); // 60 m tall
+  const material = new THREE.MeshBasicMaterial({
+    alphaMap: new THREE.CanvasTexture(canvas),
+    transparent: true,
+    opacity: 0.2,
+    blending: THREE.AdditiveBlending, // light adds up: it glows
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: false, // seen from far away above the trees: they show where the next stages are
+  });
+
+  clearings.forEach((c, i) => {
+    for (const dz of [-4, 0, 4]) {
+      beamSpots.push({ index: i, side: sideOf(i), x: sideOf(i) * (SHEET_X + 1.5), z: c.z + dz, phase: Math.random() * 6 });
+    }
+  });
+  beams = new THREE.InstancedMesh(geometry, material, beamSpots.length);
+  beams.frustumCulled = false; // they move: never skip drawing them
+  animateBeams(0);
+  scene.add(beams);
+}
+
+function animateBeams(time) {
+  const colourStep = Math.floor(time * BPM / 60 / 8);
+  beamSpots.forEach((b, k) => {
+    beam.position.set(b.x, 0.3, b.z);
+    beam.rotation.set(
+      Math.sin(time * 0.4 + b.phase) * 0.35,                // sweeps forwards and backwards...
+      0,
+      -b.side * 0.2 + Math.sin(time * 0.6 + b.phase) * 0.25, // ...and left and right, leaning back
+    );
+    beam.updateMatrix();
+    beams.setMatrixAt(k, beam.matrix);
+    beams.setColorAt(k, PALETTE[(b.index + colourStep + k) % PALETTE.length]);
+  });
+  beams.instanceMatrix.needsUpdate = true;
+  beams.instanceColor.needsUpdate = true;
+}
+
 // ---------- 3. Two YouTube players ----------
 // For a crossfade, two tracks must play at the same time: one player fades out
 // while the other fades in. They take turns.
@@ -533,6 +794,98 @@ function goTo(index) {
   now.append(name, `${current + 1} / ${tracks.length} · ${date}`);
 }
 
+// Jump straight in front of a stage (from the map): same as goTo, but already arrived
+function teleportTo(index) {
+  goTo(index);
+  distance = walkStart = stopDistances[current];
+  walking = false; // not walking = progress 1: the new track starts at full volume, the old one stops
+  const point = path.getPointAt(distance / path.getLength());
+  camera.position.set(point.x, EYE, point.z);
+  camera.rotation.set(0.18, -sideOf(current) * Math.PI / 2, 0); // already facing the sheet
+}
+
+// ---------- 5. The map: the forest seen from above ----------
+
+const mapBox = document.getElementById("map");
+const mapArea = document.getElementById("map-area");
+
+function openMap() {
+  mapBox.hidden = false;
+  mapArea.innerHTML = "";
+  const width = mapArea.clientWidth;
+  const height = mapArea.clientHeight;
+  const horizontal = width >= height; // wide screen: the forest goes left to right; phone: bottom to top
+  const endZ = stopOf(tracks.length - 1).z - 10;
+  const size = Math.max(48, Math.min(140, 1.9 * Math.max(width, height) / tracks.length)); // cover width
+  const margin = size / 2 + 4; // so that the covers on the edges are not cut
+
+  // Turns a place in the forest (metres) into a place on the map (pixels).
+  // The forest is 25 times longer than wide: we squeeze its length to fit the screen.
+  function project(x, z) {
+    const along = (START_Z - z) / (START_Z - endZ); // 0 = entrance, 1 = last stage
+    const across = (x + 20) / 40;                   // 0 = 20 m on our left, 1 = 20 m on our right
+    const [a, b] = horizontal ? [along, across] : [across, 1 - along];
+    return [margin + a * (width - 2 * margin), margin + b * (height - 2 * margin)];
+  }
+
+  // The trees and the walk, drawn on a canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  context.fillStyle = "#3f7a45";
+  for (const t of treeSpots) {
+    if (Math.abs(t.x) > 20) continue; // outside the map
+    const [px, py] = project(t.x, t.z);
+    context.beginPath();
+    context.arc(px, py, 2.5, 0, Math.PI * 2);
+    context.fill();
+  }
+  context.strokeStyle = "rgba(255, 255, 255, .4)";
+  context.lineWidth = 2;
+  context.setLineDash([6, 6]);
+  context.beginPath();
+  path.getSpacedPoints(400).forEach((p, k) => {
+    const [px, py] = project(p.x, p.z);
+    if (k === 0) context.moveTo(px, py);
+    else context.lineTo(px, py);
+  });
+  context.stroke();
+  mapArea.append(canvas);
+
+  // One button per cover, at the place of its stage. Click = teleport.
+  tracks.forEach((track, i) => {
+    const button = document.createElement("button");
+    button.className = "map-cover" + (i === current ? " current" : "");
+    button.title = `${track.artist} – ${track.title}`;
+    button.style.width = size + "px";
+    const [px, py] = project(sideOf(i) * SHEET_X, stopOf(i).z);
+    button.style.left = px + "px";
+    button.style.top = py + "px";
+    const picture = document.createElement("img");
+    picture.src = coverUrl(track);
+    picture.alt = button.title;
+    button.append(picture);
+    button.addEventListener("click", () => {
+      mapBox.hidden = true;
+      teleportTo(i);
+    });
+    mapArea.append(button);
+  });
+
+  // Where we are
+  const you = document.createElement("div");
+  you.id = "map-you";
+  const [px, py] = project(camera.position.x, camera.position.z);
+  you.style.left = px + "px";
+  you.style.top = py + "px";
+  mapArea.append(you);
+}
+
+document.getElementById("map-button").addEventListener("click", openMap);
+document.getElementById("map-close").addEventListener("click", () => { mapBox.hidden = true; });
+addEventListener("resize", () => { if (!mapBox.hidden) openMap(); }); // redraw at the new size
+
 // Move a value a small part of the way towards its target at each image: a smooth movement
 function approach(value, target, dt, speed) {
   return value + (target - value) * Math.min(1, dt * speed);
@@ -592,6 +945,8 @@ renderer.setAnimationLoop(() => {
   camera.position.y = approach(camera.position.y, EYE + bob, dt, 10);
   followCamera();
   if (dancers) animateDancers(time);
+  if (beams) animateBeams(time);
+  animateLights(time);
 
   if (fireflies) {
     fireflies.position.y = Math.sin(time * 0.5) * 0.3;              // they float up and down
@@ -601,7 +956,7 @@ renderer.setAnimationLoop(() => {
   renderer.render(scene, camera);
 });
 
-// ---------- 5. Start ----------
+// ---------- 6. Start ----------
 
 document.getElementById("next").addEventListener("click", () => goTo(current + 1));
 
