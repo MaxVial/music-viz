@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
-const SPACING = 26;        // metres between two clearings along the path
-const CLEARING_X = 8;      // distance between the path and the centre of a clearing
+const SPACING = 26;        // metres between two clearings
+const CLEARING_X = 8;      // distance between the middle of the forest and the centre of a clearing
 const CLEARING_RADIUS = 7; // no tree inside this circle
 const SHEET_X = 12;        // the sheet stands at the back of its clearing
 const SHEET_HEIGHT = 6;    // a big sheet: 6 m tall
@@ -66,7 +66,8 @@ camera.rotation.order = "YXZ"; // turn the head left/right first, then up/down
 
 // ---- Lights ----
 // Soft light coming from everywhere: bluish from the sky, almost black from the ground
-scene.add(new THREE.HemisphereLight("#4a6488", "#1a1a12", 2));
+// (it ignores shadows: it keeps the ground visible under the treetops)
+scene.add(new THREE.HemisphereLight("#4a6488", "#2a2a1c", 3.5));
 
 // Moonlight: one strong bluish light from one direction. It is the one that casts the shadows.
 const moonLight = new THREE.DirectionalLight("#a9bcff", 3);
@@ -109,20 +110,59 @@ function clearingOf(index) {
   return { x: sideOf(index) * CLEARING_X, z: -index * SPACING };
 }
 
-// A tree may grow here if its branches stay off the path and it is outside every clearing.
-// The lowest branches of a tree of size 1 spread 2 m around the trunk.
-function isFree(x, z, size, clearings) {
-  if (Math.abs(x) < 1.5 + 2 * size) return false; // the path is 3 m wide
+// ---- The walk: a winding route between the trees, no path ----
+
+// Where we stand to look at clearing number `index`: just at its edge
+function stopOf(index) {
+  return new THREE.Vector3(0, 0, -index * SPACING);
+}
+
+// For each walk (to clearing 0, 1, 2...) a few points pushed left, right, left...:
+// we slalom between the trees instead of walking straight
+let waypoints = [];
+
+function makeWaypoints(count) {
+  const all = [];
+  for (let i = 0; i < count; i++) {
+    const fromZ = i === 0 ? START_Z : stopOf(i - 1).z;
+    const toZ = stopOf(i).z;
+    const steps = i === 0 ? 1 : 3;
+    let side = Math.random() < 0.5 ? -1 : 1;
+    const points = [];
+    for (let s = 1; s <= steps; s++) {
+      const z = fromZ + (toZ - fromZ) * s / (steps + 1);
+      points.push(new THREE.Vector3(side * (1.5 + Math.random() * 2.5), 0, z));
+      side = -side;
+    }
+    all.push(points);
+  }
+  return all;
+}
+
+// A smooth curve from `start` to clearing `index`. Catmull-Rom = a curve that goes
+// exactly through each point; "centripetal" keeps it from making loops.
+function routeFrom(start, index) {
+  const ahead = waypoints[index].filter(p => p.z < start.z - 2); // only the points still in front of us
+  return new THREE.CatmullRomCurve3([start.clone(), ...ahead, stopOf(index)], false, "centripetal");
+}
+
+// A tree may grow here if its trunk is 1.3 m away from where we walk and outside every clearing.
+// The trees are tall: their branches start above our head, so we can pass close to the trunks.
+function isFree(x, z, clearings, routePoints) {
+  for (const p of routePoints) {
+    if (Math.abs(p.z - z) < 1.3 && Math.hypot(p.x - x, p.z - z) < 1.3) return false;
+  }
   return clearings.every(c => Math.hypot(x - c.x, z - c.z) > CLEARING_RADIUS);
 }
 
 // A fir tree = 3 cones stacked, wider at the bottom, merged into ONE shape.
 // Both shapes start at the ground (y = 0), so a tree and its trunk share the same position.
+// The lowest branches start 4 m high: above our head even for the smallest trees.
 function firGeometry() {
   const tiers = [ // [radius, height, height of its centre]
-    [2.0, 3.5, 3.2],
-    [1.5, 3.0, 5.0],
-    [0.9, 2.4, 6.7],
+    [2.0, 3.5, 5.7],
+    [1.5, 3.0, 7.5],
+    [0.9, 2.4, 9.2],
   ];
   return mergeGeometries(tiers.map(([radius, height, y]) =>
     new THREE.ConeGeometry(radius, height, 8).translate(0, y, 0)));
@@ -130,10 +170,10 @@ function firGeometry() {
 
 // Thousands of trees drawn in one go: an InstancedMesh is ONE shape repeated many times,
 // each copy with its own position, rotation, size and colour.
-function addForest(startZ, endZ, clearings) {
-  const max = Math.round((startZ - endZ) * 7);
+function addForest(startZ, endZ, clearings, routePoints) {
+  const max = Math.round((startZ - endZ) * 9);
   const trunks = new THREE.InstancedMesh(
-    new THREE.CylinderGeometry(0.15, 0.3, 4, 6).translate(0, 2, 0), // top radius, bottom radius, height, sides
+    new THREE.CylinderGeometry(0.15, 0.3, 7, 6).translate(0, 3.5, 0), // top radius, bottom radius, height, sides
     new THREE.MeshLambertMaterial({ color: "#3b2a1d" }),
     max,
   );
@@ -148,8 +188,9 @@ function addForest(startZ, endZ, clearings) {
   const colour = new THREE.Color();
   let count = 0;
 
-  function plant(x, z, size) {
-    if (count === max || !isFree(x, z, size, clearings)) return;
+  function plant(x, z) {
+    if (count === max || !isFree(x, z, clearings, routePoints)) return;
+    const size = 0.8 + Math.random() * 0.6;
     tree.position.set(x, 0, z);
     tree.rotation.set(
       (Math.random() - 0.5) * 0.08, // leans a little...
@@ -165,17 +206,17 @@ function addForest(startZ, endZ, clearings) {
     count++;
   }
 
-  // 1. A row of small firs along each side of the path, one every ~3.5 m:
-  //    between two clearings we walk past 2 or 3 of them
-  for (let z = startZ; z > endZ; z -= 3.5) {
-    plant(-3.8 - Math.random() * 1.5, z + Math.random(), 0.7 + Math.random() * 0.4);
-    plant(3.8 + Math.random() * 1.5, z + Math.random(), 0.7 + Math.random() * 0.4);
-  }
-  // 2. The rest of the forest, at random, denser near the path
+  // 1. Trees all along the walk, every ~3 m, one on each side, 1.5 to 4 m away:
+  //    the trunks we slalom between
+  routePoints.forEach((p, k) => {
+    if (k % 6 !== 0) return; // the route points are 50 cm apart: 1 in 6 = every 3 m
+    plant(p.x - 1.5 - Math.random() * 2.5, p.z + (Math.random() - 0.5) * 2);
+    plant(p.x + 1.5 + Math.random() * 2.5, p.z + (Math.random() - 0.5) * 2);
+  });
+  // 2. The rest of the forest, at random, denser in the middle
   for (let i = 0; i < max; i++) {
     const side = Math.random() < 0.5 ? -1 : 1;
-    const x = side * (3 + Math.random() ** 2 * 40);
-    plant(x, endZ + Math.random() * (startZ - endZ), 0.7 + Math.random() * 0.9);
+    plant(side * Math.random() ** 2 * 45, endZ + Math.random() * (startZ - endZ));
   }
 
   trunks.count = leaves.count = count; // only draw the trees really planted
@@ -191,7 +232,7 @@ function groundGeometry(width, length) {
   const earth = new THREE.Color("#2a2016");
   const colours = [];
   for (let i = 0; i < position.count; i++) {
-    position.setZ(i, -Math.random() * 0.25); // only down: it never covers the path or the clearings
+    position.setZ(i, -Math.random() * 0.25); // only down: it never covers the clearings
     const c = moss.clone().lerp(earth, Math.random());
     colours.push(c.r, c.g, c.b);
   }
@@ -210,9 +251,21 @@ function addFireflies(startZ, endZ) {
   }
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  // A point is drawn as a square: we give it a picture of a soft round glow instead,
+  // drawn on an invisible 32 x 32 canvas
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 32;
+  const context = canvas.getContext("2d");
+  const glow = context.createRadialGradient(16, 16, 0, 16, 16, 16);
+  glow.addColorStop(0, "white");
+  glow.addColorStop(1, "transparent");
+  context.fillStyle = glow;
+  context.fillRect(0, 0, 32, 32);
+
   fireflies = new THREE.Points(geometry, new THREE.PointsMaterial({
     color: "#d9ff8a",
-    size: 0.15,
+    map: new THREE.CanvasTexture(canvas),
+    size: 0.2,
     transparent: true,
     blending: THREE.AdditiveBlending, // light adds up: they glow
     depthWrite: false,
@@ -223,7 +276,15 @@ function addFireflies(startZ, endZ) {
 function buildScene(tracks) {
   const length = tracks.length * SPACING + 2 * SPACING;
   const clearings = tracks.map((_, i) => clearingOf(i));
-  addForest(START_Z + 20, -length, clearings);
+
+  // Draw every walk now, so that no tree grows on it. A point every 50 cm.
+  waypoints = makeWaypoints(tracks.length);
+  const routePoints = tracks.flatMap((_, i) => {
+    const route = routeFrom(i === 0 ? new THREE.Vector3(0, 0, START_Z) : stopOf(i - 1), i);
+    return route.getSpacedPoints(Math.ceil(route.getLength() / 0.5));
+  });
+
+  addForest(START_Z + 20, -length, clearings, routePoints);
   addFireflies(START_Z + 20, -length);
 
   // A patch of lighter grass shows each clearing
@@ -247,15 +308,6 @@ function buildScene(tracks) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  const path = new THREE.Mesh(
-    new THREE.PlaneGeometry(3, length),
-    new THREE.MeshLambertMaterial({ color: "#3a2e22" }),
-  );
-  path.rotation.x = -Math.PI / 2;
-  path.position.set(0, 0.01, ground.position.z); // 1 cm above the ground so both stay visible
-  path.receiveShadow = true;
-  scene.add(path);
-
   const loader = new THREE.TextureLoader();
   tracks.forEach((track, i) => {
     const sheet = new THREE.Mesh(
@@ -269,7 +321,7 @@ function buildScene(tracks) {
       sheet.scale.x = texture.image.width / texture.image.height; // keep the picture's shape
     });
     sheet.position.set(sideOf(i) * SHEET_X, SHEET_HEIGHT / 2 + 0.5, -i * SPACING); // 50 cm above the grass
-    sheet.rotation.y = -sideOf(i) * Math.PI / 2; // turn the sheet to face the path
+    sheet.rotation.y = -sideOf(i) * Math.PI / 2; // turn the sheet to face the middle of the forest
     sheet.castShadow = true;
     scene.add(sheet);
   });
@@ -321,7 +373,9 @@ let tracks = [];
 let current = 0;      // the sheet we walk to, then listen to
 let walking = false;  // true while moving, false while listening
 let started = false;  // false until the "enter" click
-let walkFrom = START_Z; // where the current walk started
+let route;            // the curve of the current walk
+let routeLength = 0;  // its length in metres
+let walked = 0;       // metres already walked on it
 
 // Sound along the walk, with progress = 0 when we leave a sheet and 1 when we reach the next one:
 const FADE_OUT_END = 0.7; // the old track is silent at 70 % of the way
@@ -329,8 +383,10 @@ const FADE_IN_START = 0.5; // the new track starts half way, then grows until we
 
 function goTo(index) {
   current = index % tracks.length;
-  if (current === 0) camera.position.z = START_Z; // after the last one: back to the start
-  walkFrom = camera.position.z;
+  if (current === 0) camera.position.set(0, EYE, START_Z); // after the last one: back to the start
+  route = routeFrom(new THREE.Vector3(camera.position.x, 0, camera.position.z), current);
+  routeLength = route.getLength();
+  walked = 0;
   walking = true;
 
   // The player of the old track keeps playing and will fade out.
@@ -368,25 +424,31 @@ renderer.setAnimationLoop(() => {
   let bob = 0;
 
   if (started) {
-    const stopZ = -current * SPACING;
     const sheetYaw = -sideOf(current) * Math.PI / 2; // +90° = left, -90° = right
 
     if (walking) {
-      camera.position.z = Math.max(stopZ, camera.position.z - SPEED * dt);
+      walked = Math.min(routeLength, walked + SPEED * dt);
+      const u = walked / routeLength; // 0 = start of the curve, 1 = end
+      const point = route.getPointAt(u);
+      camera.position.x = point.x;
+      camera.position.z = point.z;
+      // Look where we go: the tangent is the direction of the curve at this point
+      const direction = route.getTangentAt(u);
+      yaw += Math.atan2(-direction.x, -direction.z);
       stepPhase += dt * 8;
       bob = Math.sin(stepPhase) * 0.04;
-      // The last metres before the sheet: the head turns towards it little by little
-      const closeness = Math.max(0, 1 - (camera.position.z - stopZ) / TURN_START); // 0 far, 1 arrived
+      // The last metres before the clearing: the head turns towards it little by little
+      const closeness = Math.max(0, 1 - (routeLength - walked) / TURN_START); // 0 far, 1 arrived
       yaw += (sheetYaw - yaw) * closeness;
 
-      if (camera.position.z === stopZ) walking = false; // arrived in front of the sheet
+      if (walked === routeLength) walking = false; // arrived in front of the sheet
     } else {
       yaw = sheetYaw + Math.sin(time * 0.5) * 0.04; // listening: almost still
       pitch = 0.15;                                  // eyes up towards the cover
     }
 
     // ---- Crossfade: the volumes depend on where we are on the way ----
-    const progress = walking ? 1 - (camera.position.z - stopZ) / (walkFrom - stopZ) : 1;
+    const progress = walking ? walked / routeLength : 1;
     if (!loaded && progress >= FADE_IN_START) { // half way: the new track starts, silent
       players[active].setVolume(0);
       players[active].volume = 0;
